@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net/url"
@@ -10,7 +11,6 @@ import (
 )
 
 func yahooRanking(tch chan string) {
-	log.Println("starg yahoo ranking")
 
 	doc, err := goquery.NewDocument("http://searchranking.yahoo.co.jp/burst_ranking/")
 	if err != nil {
@@ -21,16 +21,23 @@ func yahooRanking(tch chan string) {
 
 	doc.Find("ul.patC li a").Each(func(i int, s *goquery.Selection) {
 		t := s.Text()
-		log.Printf("send title %s\n", t)
 		tch <- t
 	})
 
-	log.Println("end yahoo ranking")
 	close(tch)
 }
 
+func getURL(doc *goquery.Document, uch chan string) {
+	f := doc.Find("h3.r a")
+	f.Each(func(i int, s *goquery.Selection) {
+		u, ok := s.Attr("href")
+		if ok {
+			uch <- u
+		}
+	})
+}
+
 func googleSearch(tch chan string, uch chan string) {
-	log.Println("start google search")
 	var wg sync.WaitGroup
 loop:
 	for {
@@ -40,11 +47,10 @@ loop:
 				break loop
 			}
 
-			log.Printf("receive title %s\n", t)
-
 			wg.Add(1)
 			go func(t string) {
-				log.Printf("start google query: %s\n", t)
+				defer wg.Done()
+
 				q := url.QueryEscape(t)
 				u := fmt.Sprintf("https://www.google.co.jp/search?q=%s", q)
 				doc, err := goquery.NewDocument(u)
@@ -53,25 +59,28 @@ loop:
 					return
 				}
 
-				f := doc.Find("h3.r a")
-				fmt.Println(f.Length())
+				getURL(doc, uch)
 
+				f := doc.Find("td a.fl")
 				f.Each(func(i int, s *goquery.Selection) {
 					u, ok := s.Attr("href")
 					if ok {
-						log.Printf("send url: %s\n", u)
-						uch <- u
+						go func() {
+							doc, err := goquery.NewDocument(fmt.Sprintf("https://www.google.co.jp%s", u))
+							if err != nil {
+								log.Printf("google err: %s, title %s\n", err, t)
+								return
+							}
+							getURL(doc, uch)
+						}()
 					}
 				})
-
-				wg.Done()
 
 			}(t)
 		}
 	}
 	wg.Wait()
 	close(uch)
-	log.Println("end google search")
 }
 
 func collectURL(uch chan string, lch chan []string) {
@@ -83,13 +92,16 @@ loop:
 			if !ok {
 				break loop
 			}
-			log.Printf("receive url: %s\n", u)
 			list = append(list, u)
 		}
 	}
 
-	log.Printf("send list: len %d\n", len(list))
 	lch <- list
+}
+
+func accessURL(u string) {
+	target := fmt.Sprintf("https://google.co.jp%s", u)
+	fmt.Println(base64.RawURLEncoding.EncodeToString([]byte(target)))
 }
 
 func main() {
@@ -101,10 +113,12 @@ func main() {
 	go googleSearch(tch, uch)
 	go collectURL(uch, lch)
 
-	log.Println("waiting collectURL")
 	list := <-lch
-	for i, u := range list {
-		fmt.Printf("#%5d: %s", i, u)
+	/*for i, u := range list {
+		//fmt.Printf("#%05d: %s\n", i, u)
+	}*/
+
+	for _, u := range list {
+		accessURL(u)
 	}
-	log.Println("done")
 }
